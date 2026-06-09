@@ -1,0 +1,30 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "regions": ["iad1"],
+  "functions": {
+    "app/api/tools/playwright/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/tools/analyze/route.ts": {
+      "maxDuration": 30
+    },
+    "app/api/tools/edge-cases/route.ts": {
+      "maxDuration": 30
+    },
+    "app/api/tools/exploratory/route.ts": {
+      "maxDuration": 30
+    },
+    "app/api/health/route.ts": {
+      "maxDuration": 5
+    }
+  },
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    }
+  ]
+}
