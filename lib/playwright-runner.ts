@@ -1,38 +1,39 @@
 import "server-only";
 
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { type RunnerEvent, type LogLevel, now } from "@/lib/runner-events";
 
 /**
  * Run a Playwright script body in-process and emit events as it executes.
  *
- * Why in-process (and not spawning `playwright test` CLI):
- *  - We need a streaming, structured event protocol (step-start/end, console,
- *    screenshots) — far easier when we own the Page object directly.
- *  - We need headed mode on the user's machine, not in a worker subprocess.
- *  - We need the user-provided script body (no surrounding test() / import())
- *    so they don't have to know the runner-spec format.
+ * What the user sees:
+ *   1. A real, visible Chromium window (headed mode by default) so they can
+ *      watch every click/keystroke in real time.
+ *   2. A streaming live log in the dashboard with per-step pass/fail, console
+ *      output, page errors, and failed requests.
+ *   3. After the run finishes — a recorded video of the entire session, played
+ *      back inline in the dashboard. Video is captured at viewport resolution
+ *      via Playwright's recordVideo context option and served by GET
+ *      /api/tools/run/video/[runId].
  *
- * Security note: the script body executes in this process via AsyncFunction.
- * That means it has full Node access (fs, child_process, …). This is acceptable
- * because the Live Runner is a LOCAL DEV tool — the same process the user owns
- * already runs `npm run dev`. We block this route from production runtime
- * separately. Do not enable this route on a public-facing deployment.
+ * Security note: the script body executes in this process via AsyncFunction
+ * with full Node access (fs, etc.). This is acceptable for a LOCAL DEV tool —
+ * the same process that runs `npm run dev`. We refuse to run this route on
+ * Vercel/Lambda; do not enable it on a public-facing deployment.
  */
 
 export interface RunOptions {
   url: string;
   scriptBody: string;
-  /** Default chromium. */
+  runId: string;
   browser?: "chromium" | "firefox" | "webkit";
-  /** Default false (headed). */
   headless?: boolean;
-  /** Default 250ms. */
   slowMo?: number;
-  /** Hard ceiling for the whole script. Default 60_000. */
   timeoutMs?: number;
-  /** Emit callback. The route streams these as SSE chunks. */
   emit: (event: RunnerEvent) => void;
-  /** AbortSignal forwarded from the HTTP request, so closing the tab kills the run. */
   signal?: AbortSignal;
 }
 
@@ -43,8 +44,40 @@ interface RunStats {
   error?: string;
 }
 
+const VIDEO_WIDTH = 1280;
+const VIDEO_HEIGHT = 800;
+const VIDEO_TTL_MS = 2 * 60 * 60 * 1000; // 2h on disk before garbage collection
+
 const AsyncFunction = Object.getPrototypeOf(async function () {})
   .constructor as new (...args: string[]) => (...args: unknown[]) => Promise<unknown>;
+
+/** Root tempdir for all live-runner artifacts. Each run gets its own subdir. */
+export function runsRootDir(): string {
+  return join(tmpdir(), "qa-copilot-runs");
+}
+
+/** Absolute dir for a single run's artifacts (video, etc.). */
+export function runDir(runId: string): string {
+  return join(runsRootDir(), runId);
+}
+
+/** Best-effort: drop run dirs older than VIDEO_TTL_MS so /tmp doesn't bloat. */
+export function gcOldRuns(): void {
+  const root = runsRootDir();
+  if (!existsSync(root)) return;
+  const cutoff = Date.now() - VIDEO_TTL_MS;
+  for (const name of readdirSync(root)) {
+    const dir = join(root, name);
+    try {
+      const st = statSync(dir);
+      if (st.isDirectory() && st.mtimeMs < cutoff) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    } catch {
+      /* ignore — another process may have deleted it */
+    }
+  }
+}
 
 export async function runScript(opts: RunOptions): Promise<void> {
   const start = now();
@@ -54,8 +87,8 @@ export async function runScript(opts: RunOptions): Promise<void> {
   const headless = opts.headless ?? false;
   const slowMo = opts.slowMo ?? 250;
 
-  // Dynamic import — keeps Playwright out of the Edge bundle and out of the
-  // critical-path bundle for routes that don't need it.
+  // Dynamic import — keeps Playwright out of the Edge bundle / cold-start path
+  // of any other route.
   let chromium: typeof import("@playwright/test")["chromium"];
   let firefox: typeof import("@playwright/test")["firefox"];
   let webkit: typeof import("@playwright/test")["webkit"];
@@ -81,14 +114,23 @@ export async function runScript(opts: RunOptions): Promise<void> {
   const launcher =
     browserName === "firefox" ? firefox : browserName === "webkit" ? webkit : chromium;
 
+  // Prepare per-run video directory.
+  gcOldRuns();
+  const videoDir = runDir(opts.runId);
+  mkdirSync(videoDir, { recursive: true });
+
   let browser: import("@playwright/test").Browser | null = null;
   let context: import("@playwright/test").BrowserContext | null = null;
   let page: import("@playwright/test").Page | null = null;
-  let screenshotIndex = 0;
+  let videoHandle: import("@playwright/test").Video | null = null;
   let stepIndex = 0;
   const stats: RunStats = { ok: false, passedSteps: 0, failedSteps: 0 };
 
-  const log = (message: string, level: LogLevel = "info", source: "runner" | "browser" | "script" = "runner") => {
+  const log = (
+    message: string,
+    level: LogLevel = "info",
+    source: "runner" | "browser" | "script" = "runner"
+  ) => {
     emit({ type: "log", ts: now(), level, message, source });
   };
 
@@ -96,12 +138,13 @@ export async function runScript(opts: RunOptions): Promise<void> {
     log(`Launching ${browserName} (${headless ? "headless" : "headed"}, slowMo=${slowMo}ms)…`);
     browser = await launcher.launch({ headless, slowMo });
     context = await browser.newContext({
-      viewport: { width: 1280, height: 800 },
+      viewport: { width: VIDEO_WIDTH, height: VIDEO_HEIGHT },
       ignoreHTTPSErrors: true,
+      recordVideo: { dir: videoDir, size: { width: VIDEO_WIDTH, height: VIDEO_HEIGHT } },
     });
-
-    // Wire context-level diagnostics → SSE
     page = await context.newPage();
+    videoHandle = page.video();
+    log(`Recording video to ${videoDir}`);
 
     page.on("console", (msg) => {
       const type = msg.type();
@@ -113,16 +156,13 @@ export async function runScript(opts: RunOptions): Promise<void> {
         ts: now(),
         level,
         message: msg.text(),
-        location: loc?.url ? `${loc.url}:${loc.lineNumber ?? "?"}:${loc.columnNumber ?? "?"}` : undefined,
+        location: loc?.url
+          ? `${loc.url}:${loc.lineNumber ?? "?"}:${loc.columnNumber ?? "?"}`
+          : undefined,
       });
     });
     page.on("pageerror", (err) => {
-      emit({
-        type: "pageerror",
-        ts: now(),
-        message: err.message,
-        stack: err.stack,
-      });
+      emit({ type: "pageerror", ts: now(), message: err.message, stack: err.stack });
     });
     page.on("requestfailed", (req) => {
       const failure = req.failure()?.errorText ?? "unknown";
@@ -135,67 +175,41 @@ export async function runScript(opts: RunOptions): Promise<void> {
       });
     });
 
-    // Auto-screenshot on navigation
-    page.on("framenavigated", async (frame) => {
-      if (frame !== page!.mainFrame()) return;
-      try {
-        const buf = await page!.screenshot({ type: "jpeg", quality: 70, fullPage: false });
-        emit({
-          type: "screenshot",
-          ts: now(),
-          index: ++screenshotIndex,
-          label: `nav: ${frame.url()}`,
-          dataUrl: `data:image/jpeg;base64,${buf.toString("base64")}`,
-        });
-      } catch {
-        /* navigation screenshots are best-effort */
-      }
+    log(`Navigating to ${opts.url}…`);
+    await page.goto(opts.url, {
+      waitUntil: "domcontentloaded",
+      timeout: Math.min(30_000, timeoutMs),
     });
 
-    log(`Navigating to ${opts.url}…`);
-    await page.goto(opts.url, { waitUntil: "domcontentloaded", timeout: Math.min(30_000, timeoutMs) });
-
-    // Helpers exposed to the user script
+    // Helpers exposed to the user script. Wrapping actions in step() makes the
+    // live log readable and groups assertions by intent.
     const step = async (name: string, fn: () => Promise<void> | void): Promise<void> => {
       const myIndex = ++stepIndex;
       const t0 = now();
       emit({ type: "step-start", ts: t0, index: myIndex, name });
       try {
         await fn();
-        const durationMs = now() - t0;
-        emit({ type: "step-end", ts: now(), index: myIndex, name, ok: true, durationMs });
         stats.passedSteps += 1;
-        // Snapshot at the end of every successful step.
-        try {
-          const buf = await page!.screenshot({ type: "jpeg", quality: 70, fullPage: false });
-          emit({
-            type: "screenshot",
-            ts: now(),
-            index: ++screenshotIndex,
-            label: `✓ ${name}`,
-            dataUrl: `data:image/jpeg;base64,${buf.toString("base64")}`,
-          });
-        } catch {
-          /* best-effort */
-        }
+        emit({
+          type: "step-end",
+          ts: now(),
+          index: myIndex,
+          name,
+          ok: true,
+          durationMs: now() - t0,
+        });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const durationMs = now() - t0;
-        emit({ type: "step-end", ts: now(), index: myIndex, name, ok: false, durationMs, error: message });
         stats.failedSteps += 1;
-        // Failure screenshot
-        try {
-          const buf = await page!.screenshot({ type: "jpeg", quality: 70, fullPage: true });
-          emit({
-            type: "screenshot",
-            ts: now(),
-            index: ++screenshotIndex,
-            label: `✗ ${name}`,
-            dataUrl: `data:image/jpeg;base64,${buf.toString("base64")}`,
-          });
-        } catch {
-          /* best-effort */
-        }
+        const message = err instanceof Error ? err.message : String(err);
+        emit({
+          type: "step-end",
+          ts: now(),
+          index: myIndex,
+          name,
+          ok: false,
+          durationMs: now() - t0,
+          error: message,
+        });
         throw err;
       }
     };
@@ -204,14 +218,12 @@ export async function runScript(opts: RunOptions): Promise<void> {
       emit({ type: "log", ts: now(), level, message: msg, source: "script" });
     };
 
-    // Honor a hard wall-clock timeout for the whole script.
     const aborter = new AbortController();
     const onSignal = () => aborter.abort();
     opts.signal?.addEventListener("abort", onSignal, { once: true });
     const timeoutHandle = setTimeout(() => aborter.abort(), timeoutMs);
 
     const scriptPromise = (async () => {
-      // SECURITY: arbitrary JS executed with full Node privileges. Local dev only.
       const fn = new AsyncFunction(
         "page",
         "expect",
@@ -248,21 +260,8 @@ export async function runScript(opts: RunOptions): Promise<void> {
     stats.error = err instanceof Error ? err.message : String(err);
     log(stats.error, "error");
   } finally {
-    // Final screenshot (whatever the page is showing right now)
-    if (page) {
-      try {
-        const buf = await page.screenshot({ type: "jpeg", quality: 70, fullPage: false });
-        emit({
-          type: "screenshot",
-          ts: now(),
-          index: ++screenshotIndex,
-          label: "final",
-          dataUrl: `data:image/jpeg;base64,${buf.toString("base64")}`,
-        });
-      } catch {
-        /* best-effort */
-      }
-    }
+    // IMPORTANT: closing the context finalizes the video file. Video.path()
+    // returns the on-disk location only after this resolves.
     try {
       await context?.close();
     } catch {
@@ -272,6 +271,30 @@ export async function runScript(opts: RunOptions): Promise<void> {
       await browser?.close();
     } catch {
       /* ignore */
+    }
+
+    // Resolve and report the video file.
+    if (videoHandle) {
+      try {
+        const videoPath = await videoHandle.path();
+        const st = statSync(videoPath);
+        emit({
+          type: "video-ready",
+          ts: now(),
+          runId: opts.runId,
+          mime: "video/webm",
+          sizeBytes: st.size,
+          width: VIDEO_WIDTH,
+          height: VIDEO_HEIGHT,
+          url: `/api/tools/run/video/${opts.runId}`,
+        });
+        log(`Video saved (${(st.size / 1024 / 1024).toFixed(2)} MB).`);
+      } catch (err) {
+        log(
+          `Video finalization failed: ${err instanceof Error ? err.message : String(err)}`,
+          "warn"
+        );
+      }
     }
   }
 
@@ -288,9 +311,8 @@ export async function runScript(opts: RunOptions): Promise<void> {
 
 /**
  * Quick syntactic guardrails before we send the script into AsyncFunction.
- *
- * AsyncFunction won't actually fail on `import` / `require` (it parses them
- * as keywords and throws at runtime), so we surface a friendlier error early.
+ * AsyncFunction parses but doesn't reject `import` / `require` at compile
+ * time — we surface a friendlier error here.
  */
 export function validateScript(scriptBody: string): { ok: true } | { ok: false; reason: string } {
   if (!scriptBody.trim()) return { ok: false, reason: "Script body is empty." };
@@ -315,7 +337,10 @@ export function validateScript(scriptBody: string): { ok: true } | { ok: false; 
     };
   }
   if (/(?:^|\W)(?:process\.exit|child_process|fs\.unlink|eval\s*\()/i.test(scriptBody)) {
-    return { ok: false, reason: "Disallowed API in script (process.exit/child_process/fs.unlink/eval)." };
+    return {
+      ok: false,
+      reason: "Disallowed API in script (process.exit/child_process/fs.unlink/eval).",
+    };
   }
   return { ok: true };
 }

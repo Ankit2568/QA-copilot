@@ -43,7 +43,7 @@ QA Copilot turns one input — a user story or feature description — into the 
 3. **Session-based exploratory testing plan** — charters, checklists, oracles in the James Bach / Rapid Software Testing style.
 4. **Runnable Playwright test spec** — production-quality TypeScript/JavaScript using web-first locators and auto-waiting assertions.
 5. **Complete TMS-ready test case suite** — every scenario you need (functional, negative, edge, security, performance, a11y, i18n, compatibility) with P0–P3 priorities, atomic steps, expected results, and test data. Exports to Excel with a `Status` dropdown column ready to import into Jira/Xray, TestRail, or Zephyr.
-6. **Live Runner** — paste a URL, describe what to test (or write the script yourself), and watch a real Chromium window execute it live with streaming logs and per-step screenshots. (Local dev only.)
+6. **Live Runner** — paste a URL, describe what to test (or write the script yourself), and watch a real Chromium window execute it live with streaming logs and a full video recording you can replay inline when the run finishes. (Local dev only.)
 
 Every static result is **exportable in 4 formats**: Excel (styled, multi-sheet), CSV, Markdown (Jira/Confluence-friendly), and raw JSON for pipelines.
 
@@ -58,7 +58,7 @@ Every static result is **exportable in 4 formats**: Excel (styled, multi-sheet),
 | **Exploratory Checklist** | A user story (+ optional persona) | Charters with time-boxes, area checklists, heuristics, oracles | Planning a 30-minute or 2-hour exploratory session |
 | **Playwright Tests** | A user story (+ optional target URL) | A runnable `.spec.ts` file using `getByRole`/`getByLabel`/web-first assertions, plus install & run commands | Bootstrapping E2E coverage in minutes |
 | **Test Case Suite** | A user story + optional types/priority focus + max cases | A complete, prioritized suite (mix of types, P0–P3) with steps, expected results, test data, tags — exportable as TMS-importable Excel | The everyday "I need test cases for this feature" workflow |
-| **Live Runner** *(local only)* | A URL + plain-English scenario *or* your own JavaScript | A live-streaming run inside a real Chromium window — per-step logs, console errors, request failures, screenshots, and a pass/fail summary | Smoke-testing a URL on the spot, debugging a flaky flow, or running a one-off check without standing up a Playwright project |
+| **Live Runner** *(local only)* | A URL + plain-English scenario *or* your own JavaScript | A live-streaming run inside a real Chromium window — per-step logs, console errors, request failures, a pass/fail summary, and a full video recording you can replay or download | Smoke-testing a URL on the spot, debugging a flaky flow, or running a one-off check without standing up a Playwright project |
 
 ---
 
@@ -119,7 +119,7 @@ Then go to **http://localhost:3030/tools/runner** and:
    - Per-step pass/fail with duration
    - Console messages and page errors from the target site
    - Failed network requests
-   - A screenshot after every step (clickable to zoom + download)
+   - A full video recording of the run, played back inline (and downloadable as `.webm`) the moment the run finishes
    - Final pass/fail summary with totals
 
 **Security note:** the user-provided script runs as JavaScript inside the same Node process as `npm run dev`. That process can already touch your filesystem, so this is acceptable for local dev — but **do not enable the `/api/tools/run` route on a public-facing deployment**. The route refuses to run when it detects `VERCEL=1` or `AWS_LAMBDA_FUNCTION_NAME`.
@@ -301,7 +301,8 @@ QA-copilot/
 │           ├── test-cases/route.ts
 │           └── run/
 │               ├── route.ts                    # NEW: SSE streaming live-run endpoint
-│               └── generate/route.ts           # NEW: script-only generation (preview before run)
+│               ├── generate/route.ts           # NEW: script-only generation (preview before run)
+│               └── video/[id]/route.ts         # NEW: streams the recorded .webm video back to the player
 ├── components/
 │   ├── Topbar.tsx, Sidebar.tsx     # chrome
 │   ├── ModelPicker.tsx             # top-bar Gemini model dropdown + useSelectedModel hook
@@ -315,7 +316,7 @@ QA-copilot/
 │   │   └── TestCasesView.tsx       # filter by type + priority, expandable cards
 │   └── runner/                     # NEW: Live Runner UI
 │       ├── LiveLog.tsx             # terminal-style streaming log
-│       ├── ScreenshotGallery.tsx   # latest preview + thumbnail strip + zoom modal
+│       ├── VideoPlayer.tsx         # inline .webm playback (recording indicator while running)
 │       └── RunSummary.tsx          # pass/fail summary card
 ├── lib/
 │   ├── api.ts                      # errorResponse, rateLimitOrReject, requireGeminiKey

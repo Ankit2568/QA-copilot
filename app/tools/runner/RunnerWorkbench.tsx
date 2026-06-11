@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getSelectedModel } from "@/components/ModelPicker";
 import { LiveLog, eventToEntries, type LogEntry } from "@/components/runner/LiveLog";
 import { RunSummary } from "@/components/runner/RunSummary";
-import { ScreenshotGallery, type Shot } from "@/components/runner/ScreenshotGallery";
+import { VideoPlayer, type VideoInfo } from "@/components/runner/VideoPlayer";
 import type { RunnerEvent } from "@/lib/runner-events";
 import { cn } from "@/lib/utils";
 
@@ -62,7 +62,7 @@ export function RunnerWorkbench() {
   // run
   const [running, setRunning] = useState(false);
   const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [shots, setShots] = useState<Shot[]>([]);
+  const [video, setVideo] = useState<VideoInfo | null>(null);
   const [done, setDone] = useState<DoneState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -79,7 +79,7 @@ export function RunnerWorkbench() {
   const reset = useCallback(() => {
     abortRef.current?.abort();
     setEntries([]);
-    setShots([]);
+    setVideo(null);
     setDone(null);
     setError(null);
     setGenerationError(null);
@@ -155,7 +155,7 @@ export function RunnerWorkbench() {
       }
 
       await consumeEventStream(res.body, (event) => {
-        applyEvent(event, { setEntries, setShots, setDone, setError });
+        applyEvent(event, { setEntries, setVideo, setDone, setError });
       });
     } catch (err) {
       if ((err as { name?: string })?.name === "AbortError") {
@@ -449,10 +449,22 @@ export function RunnerWorkbench() {
       {/* Live panels */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 min-h-[420px]">
         <LiveLog entries={entries} running={running} />
-        <ScreenshotGallery shots={shots} />
+        <VideoPlayer
+          video={video}
+          running={running}
+          durationLabel={done ? formatDuration(done.durationMs) : undefined}
+        />
       </div>
     </div>
   );
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.floor((ms % 60_000) / 1000);
+  return `${m}m ${s}s`;
 }
 
 function ModeButton({
@@ -523,7 +535,7 @@ async function consumeEventStream(
 
 interface ApplyTargets {
   setEntries: React.Dispatch<React.SetStateAction<LogEntry[]>>;
-  setShots: React.Dispatch<React.SetStateAction<Shot[]>>;
+  setVideo: React.Dispatch<React.SetStateAction<VideoInfo | null>>;
   setDone: React.Dispatch<React.SetStateAction<DoneState | null>>;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
 }
@@ -534,17 +546,15 @@ function applyEvent(event: RunnerEvent, t: ApplyTargets): void {
     case "generated":
       // No-op (we already have the script locally; could log if desired).
       return;
-    case "screenshot":
-      t.setShots((prev) => [
-        ...prev,
-        {
-          id: `shot-${event.index}-${event.ts}`,
-          ts: event.ts,
-          index: event.index,
-          label: event.label,
-          dataUrl: event.dataUrl,
-        },
-      ]);
+    case "video-ready":
+      t.setVideo({
+        runId: event.runId,
+        mime: event.mime,
+        sizeBytes: event.sizeBytes,
+        width: event.width,
+        height: event.height,
+        url: event.url,
+      });
       return;
     case "done":
       t.setDone({

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { NextResponse } from "next/server";
 
 import { errorResponse, parseJsonBody, rateLimitOrReject, requireGeminiKey } from "@/lib/api";
@@ -115,6 +117,8 @@ export async function POST(req: Request) {
           { once: true }
         );
 
+        const runId = randomUUID();
+
         emit({
           type: "meta",
           ts: now(),
@@ -124,6 +128,7 @@ export async function POST(req: Request) {
           slowMo: input.slow_mo,
           mode: input.mode,
           codePreview: code.length > 800 ? code.slice(0, 800) + "\n…" : code,
+          runId,
         });
 
         if (input.mode === "generate") {
@@ -134,6 +139,7 @@ export async function POST(req: Request) {
           await runScript({
             url: input.url,
             scriptBody: code,
+            runId,
             browser: input.browser,
             headless: input.headless,
             slowMo: input.slow_mo,

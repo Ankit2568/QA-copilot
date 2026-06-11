@@ -102,9 +102,9 @@ export const TOOLS: Record<ToolSlug, ToolMeta> = {
     shortName: "Live Runner",
     tagline: "Paste a URL, describe the test, watch a real browser run it.",
     description:
-      "Generate or paste a Playwright script and execute it against any URL in a real, headed Chromium window. Streams live logs and screenshots as the test runs.",
+      "Generate or paste a Playwright script and execute it against any URL in a real, headed Chromium window. Streams live logs as the test runs and replays the full video recording inline when it finishes.",
     longDescription:
-      "An interactive Playwright cockpit. Give it a URL plus either a plain-English scenario (Gemini writes the script) or your own JavaScript. Click Run — a real Chromium window opens on your machine, the script executes step-by-step, and you see live logs, per-step screenshots, console errors, and a pass/fail summary in this dashboard. Local-only: a visible browser window can't be spawned on Vercel.",
+      "An interactive Playwright cockpit. Give it a URL plus either a plain-English scenario (Gemini writes the script) or your own JavaScript. Click Run — a real Chromium window opens on your machine, the script executes step-by-step, and you see live logs, console errors, and a pass/fail summary stream into this dashboard. As soon as the run ends, the full video recording loads inline so you can replay or download it. Local-only: a visible browser window can't be spawned on Vercel.",
     icon: MonitorPlay,
     color: "cyan",
     apiPath: "/api/tools/run",
