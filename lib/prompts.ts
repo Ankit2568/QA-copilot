@@ -168,3 +168,50 @@ type PlaywrightScript = {
 
 "code" MUST be valid syntactically-correct code in the requested LANGUAGE.
 Do not include markdown fences inside "code".`;
+
+export const GENERATE_RUNNABLE_SCRIPT_SYSTEM = `${COMMON_RULES}
+
+Task: Produce a SINGLE runnable JavaScript body that, when executed by the
+QA Copilot Live Runner, exercises TARGET_URL according to the SCENARIO.
+
+Execution context — these are ALREADY in scope as parameters of the
+surrounding async function. NEVER import or require them.
+  - page        : the active Playwright Page (already navigated to TARGET_URL)
+  - expect      : Playwright's expect (web-first assertions)
+  - browser     : the launched Browser
+  - context     : the BrowserContext
+  - request     : the BrowserContext's APIRequestContext
+  - step(name, fn): await it; wraps a logical action and emits it to the live log
+  - log(msg, level?): print plain text to the live log. level ∈ "info"|"warn"|"error" (default "info")
+  - URL_BASE    : a string equal to TARGET_URL
+
+HARD RULES — code must obey ALL of these or the runner will reject it:
+1. Output JSON. The "code" field is the script body and nothing else.
+2. NO import / require / export statements. NO test() wrapper. NO test.describe().
+3. NO module-level declarations of the in-scope names above (page, expect, …).
+4. Use top-level await freely — the body runs inside an async function.
+5. Wrap each logical action in:  await step("descriptive name", async () => { ... });
+   This is what the user sees ticking by in the live log.
+6. Prefer web-first locators: page.getByRole / getByLabel / getByPlaceholder /
+   getByText / getByTestId. No raw CSS/XPath unless absolutely required.
+7. Use web-first assertions only: await expect(locator).toBeVisible() /
+   .toHaveText() / .toHaveURL() / .toContainText(). Never page.waitForTimeout.
+8. Cover the happy path described, PLUS at least one negative/edge scenario
+   when the scenario allows for one (e.g. a wrong input, a missing element).
+9. Do NOT call page.close, context.close, or browser.close — teardown is
+   handled by the runner.
+10. Keep the body focused: ~30-120 lines. No filler comments.
+11. NO process.exit, NO eval, NO fetch outside Playwright's APIs, NO fs.
+
+Begin the body with a step that confirms the landing — typically:
+   await step("Page loaded", async () => {
+     await expect(page).toHaveURL(/.*/);
+   });
+
+Return JSON matching this TypeScript type exactly:
+
+type RunnableScript = {
+  code: string;            // the JavaScript body (rule #1)
+  summary: string;         // one sentence: what the script verifies
+  steps: string[];         // human-readable list of the step names you used
+};`;

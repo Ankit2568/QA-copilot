@@ -121,3 +121,48 @@ export const TestCaseSuite = z.object({
 });
 export type TestCaseSuite = z.infer<typeof TestCaseSuite>;
 export type TestCase = TestCaseSuite["test_cases"][number];
+
+/* ------------------------------------------------------------------ */
+/*  Live Runner — runs a Playwright script on a URL in a real browser */
+/* ------------------------------------------------------------------ */
+
+/** Input from the UI to the Live Runner. */
+export const RunnerInput = z
+  .object({
+    url: z.string().url("Enter a valid URL including http:// or https://"),
+    mode: z.enum(["generate", "manual"]),
+    description: z.string().optional(), // when mode === "generate"
+    script: z.string().optional(), // when mode === "manual" (or pre-generated, then edited)
+    headless: z.boolean().optional().default(false),
+    slow_mo: z.number().int().min(0).max(2000).optional().default(250),
+    timeout_ms: z.number().int().min(5_000).max(180_000).optional().default(60_000),
+    browser: z.enum(["chromium", "firefox", "webkit"]).optional().default("chromium"),
+    model: z.string().optional(),
+  })
+  .refine(
+    (v) =>
+      (v.mode === "generate" && (v.description?.trim().length ?? 0) >= 10) ||
+      (v.mode === "manual" && (v.script?.trim().length ?? 0) >= 10),
+    {
+      message:
+        "Provide a description (generate mode) or a Playwright script (manual mode) of at least 10 characters.",
+      path: ["mode"],
+    }
+  );
+export type RunnerInput = z.infer<typeof RunnerInput>;
+
+/** Just the AI-script generation step (used by /api/tools/run/generate). */
+export const RunnerGenerateInput = z.object({
+  url: z.string().url(),
+  description: z.string().min(10),
+  model: z.string().optional(),
+});
+export type RunnerGenerateInput = z.infer<typeof RunnerGenerateInput>;
+
+/** Shape Gemini returns when generating a runnable script for the live runner. */
+export const RunnableScript = z.object({
+  code: z.string().min(1),
+  summary: z.string().optional(),
+  steps: z.array(z.string()).optional(),
+});
+export type RunnableScript = z.infer<typeof RunnableScript>;

@@ -2,6 +2,7 @@ import {
   BarChart3,
   Compass,
   ListChecks,
+  MonitorPlay,
   Sparkles,
   TestTube2,
   type LucideIcon,
@@ -12,7 +13,8 @@ export type ToolSlug =
   | "edge-cases"
   | "exploratory"
   | "playwright"
-  | "test-cases";
+  | "test-cases"
+  | "runner";
 
 export interface ToolMeta {
   slug: ToolSlug;
@@ -22,7 +24,7 @@ export interface ToolMeta {
   longDescription: string;
   icon: LucideIcon;
   /** Tailwind color name suffix (e.g. "blue" -> bg-blue-500). */
-  color: "blue" | "violet" | "emerald" | "amber" | "rose";
+  color: "blue" | "violet" | "emerald" | "amber" | "rose" | "cyan";
   /** ~50 char tagline for cards. */
   tagline: string;
   apiPath: string;
@@ -94,6 +96,19 @@ export const TOOLS: Record<ToolSlug, ToolMeta> = {
     color: "rose",
     apiPath: "/api/tools/test-cases",
   },
+  runner: {
+    slug: "runner",
+    name: "Live Runner",
+    shortName: "Live Runner",
+    tagline: "Paste a URL, describe the test, watch a real browser run it.",
+    description:
+      "Generate or paste a Playwright script and execute it against any URL in a real, headed Chromium window. Streams live logs and screenshots as the test runs.",
+    longDescription:
+      "An interactive Playwright cockpit. Give it a URL plus either a plain-English scenario (Gemini writes the script) or your own JavaScript. Click Run — a real Chromium window opens on your machine, the script executes step-by-step, and you see live logs, per-step screenshots, console errors, and a pass/fail summary in this dashboard. Local-only: a visible browser window can't be spawned on Vercel.",
+    icon: MonitorPlay,
+    color: "cyan",
+    apiPath: "/api/tools/run",
+  },
 };
 
 export const TOOL_LIST: ToolMeta[] = Object.values(TOOLS);
@@ -145,6 +160,14 @@ export function colorClasses(color: ToolMeta["color"]): {
         border: "border-rose-500/30",
         glow: "shadow-[0_0_40px_-12px_rgba(244,63,94,0.4)]",
         gradient: "from-rose-500/20 to-pink-500/0",
+      };
+    case "cyan":
+      return {
+        bg: "bg-cyan-500/10",
+        text: "text-cyan-400",
+        border: "border-cyan-500/30",
+        glow: "shadow-[0_0_40px_-12px_rgba(34,211,238,0.4)]",
+        gradient: "from-cyan-500/20 to-sky-500/0",
       };
   }
 }

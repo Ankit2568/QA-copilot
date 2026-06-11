@@ -16,8 +16,9 @@
 ## Table of contents
 
 - [What it does](#what-it-does)
-- [The 5 tools](#the-5-tools)
+- [The tools](#the-tools)
 - [Quick start (local dev)](#quick-start-local-dev)
+- [Live Runner — extra setup (local only)](#live-runner--extra-setup-local-only)
 - [Get a free Gemini API key](#get-a-free-gemini-api-key)
 - [Environment variables](#environment-variables)
 - [Choosing a model](#choosing-a-model)
@@ -42,12 +43,13 @@ QA Copilot turns one input — a user story or feature description — into the 
 3. **Session-based exploratory testing plan** — charters, checklists, oracles in the James Bach / Rapid Software Testing style.
 4. **Runnable Playwright test spec** — production-quality TypeScript/JavaScript using web-first locators and auto-waiting assertions.
 5. **Complete TMS-ready test case suite** — every scenario you need (functional, negative, edge, security, performance, a11y, i18n, compatibility) with P0–P3 priorities, atomic steps, expected results, and test data. Exports to Excel with a `Status` dropdown column ready to import into Jira/Xray, TestRail, or Zephyr.
+6. **Live Runner** — paste a URL, describe what to test (or write the script yourself), and watch a real Chromium window execute it live with streaming logs and per-step screenshots. (Local dev only.)
 
-Every result is **exportable in 4 formats**: Excel (styled, multi-sheet), CSV, Markdown (Jira/Confluence-friendly), and raw JSON for pipelines.
+Every static result is **exportable in 4 formats**: Excel (styled, multi-sheet), CSV, Markdown (Jira/Confluence-friendly), and raw JSON for pipelines.
 
 ---
 
-## The 5 tools
+## The tools
 
 | Tool | What you give it | What you get back | Best for |
 |---|---|---|---|
@@ -56,6 +58,7 @@ Every result is **exportable in 4 formats**: Excel (styled, multi-sheet), CSV, M
 | **Exploratory Checklist** | A user story (+ optional persona) | Charters with time-boxes, area checklists, heuristics, oracles | Planning a 30-minute or 2-hour exploratory session |
 | **Playwright Tests** | A user story (+ optional target URL) | A runnable `.spec.ts` file using `getByRole`/`getByLabel`/web-first assertions, plus install & run commands | Bootstrapping E2E coverage in minutes |
 | **Test Case Suite** | A user story + optional types/priority focus + max cases | A complete, prioritized suite (mix of types, P0–P3) with steps, expected results, test data, tags — exportable as TMS-importable Excel | The everyday "I need test cases for this feature" workflow |
+| **Live Runner** *(local only)* | A URL + plain-English scenario *or* your own JavaScript | A live-streaming run inside a real Chromium window — per-step logs, console errors, request failures, screenshots, and a pass/fail summary | Smoke-testing a URL on the spot, debugging a flaky flow, or running a one-off check without standing up a Playwright project |
 
 ---
 
@@ -87,6 +90,39 @@ npm run lint        # next lint
 npm run typecheck   # tsc --noEmit
 npm run verify      # lint + typecheck + build (run before pushing)
 ```
+
+---
+
+## Live Runner — extra setup (local only)
+
+The **Live Runner** tool spawns a real Chromium window on the machine running `npm run dev`. It cannot work on Vercel (or any serverless host) because serverless functions have no display and Chromium binaries aren't shipped to that runtime — the route fails fast with a clear `501` in that case.
+
+Two one-time setup steps before first use:
+
+```bash
+# 1. Pull the @playwright/test dependency (already in package.json — covered by npm install)
+npm install
+
+# 2. Download the actual Chromium binary Playwright drives (~120 MB).
+#    Add `firefox webkit` to the end if you want those browsers too.
+npx playwright install chromium
+```
+
+Then go to **http://localhost:3030/tools/runner** and:
+
+1. Paste a URL (e.g. `https://playwright.dev/`).
+2. Pick a source mode:
+   - **Generate from description** — write what to test in plain English; Gemini produces a runnable Playwright script. Edit it before running if you want.
+   - **Write my own script** — paste/write your own. Use the helpers `page`, `expect`, `browser`, `context`, `step(name, fn)`, `log(msg)` — all already in scope. **No `import`, no `test(...)` wrapper.**
+3. Tweak run options (browser, headed/headless, slow-motion, timeout).
+4. Click **Run on the spot** — a Chromium window opens, the script executes, and the dashboard streams:
+   - Per-step pass/fail with duration
+   - Console messages and page errors from the target site
+   - Failed network requests
+   - A screenshot after every step (clickable to zoom + download)
+   - Final pass/fail summary with totals
+
+**Security note:** the user-provided script runs as JavaScript inside the same Node process as `npm run dev`. That process can already touch your filesystem, so this is acceptable for local dev — but **do not enable the `/api/tools/run` route on a public-facing deployment**. The route refuses to run when it detects `VERCEL=1` or `AWS_LAMBDA_FUNCTION_NAME`.
 
 ---
 
@@ -253,7 +289,8 @@ QA-copilot/
 │   │   ├── edge-cases/{page,EdgeCasesForm}.tsx
 │   │   ├── exploratory/{page,ExploratoryForm}.tsx
 │   │   ├── playwright/{page,PlaywrightForm}.tsx
-│   │   └── test-cases/{page,TestCasesForm}.tsx
+│   │   ├── test-cases/{page,TestCasesForm}.tsx
+│   │   └── runner/{page,RunnerWorkbench}.tsx   # NEW: live in-browser Playwright runner
 │   └── api/
 │       ├── health/route.ts
 │       └── tools/
@@ -261,18 +298,25 @@ QA-copilot/
 │           ├── edge-cases/route.ts
 │           ├── exploratory/route.ts
 │           ├── playwright/route.ts
-│           └── test-cases/route.ts
+│           ├── test-cases/route.ts
+│           └── run/
+│               ├── route.ts                    # NEW: SSE streaming live-run endpoint
+│               └── generate/route.ts           # NEW: script-only generation (preview before run)
 ├── components/
 │   ├── Topbar.tsx, Sidebar.tsx     # chrome
 │   ├── ModelPicker.tsx             # top-bar Gemini model dropdown + useSelectedModel hook
 │   ├── ToolForm.tsx                # generic form wiring (model, body, loading, error, result)
 │   ├── ExportMenu.tsx              # XLSX / CSV / MD / JSON export dropdown
-│   └── results/                    # per-tool result views
-│       ├── AnalyzeView.tsx
-│       ├── EdgeCasesView.tsx
-│       ├── ExploratoryView.tsx
-│       ├── PlaywrightView.tsx
-│       └── TestCasesView.tsx       # filter by type + priority, expandable cards
+│   ├── results/                    # per-tool result views
+│   │   ├── AnalyzeView.tsx
+│   │   ├── EdgeCasesView.tsx
+│   │   ├── ExploratoryView.tsx
+│   │   ├── PlaywrightView.tsx
+│   │   └── TestCasesView.tsx       # filter by type + priority, expandable cards
+│   └── runner/                     # NEW: Live Runner UI
+│       ├── LiveLog.tsx             # terminal-style streaming log
+│       ├── ScreenshotGallery.tsx   # latest preview + thumbnail strip + zoom modal
+│       └── RunSummary.tsx          # pass/fail summary card
 ├── lib/
 │   ├── api.ts                      # errorResponse, rateLimitOrReject, requireGeminiKey
 │   ├── gemini.ts                   # server-only Google Gen AI client + retry/timeout/error rewriting
@@ -283,6 +327,8 @@ QA-copilot/
 │   ├── rate-limit.ts               # in-memory LRU rate limiter
 │   ├── site.ts                     # site-level constants
 │   ├── tools.ts                    # tool metadata (icons, colors, descriptions)
+│   ├── runner-events.ts            # NEW: SSE event protocol (shared client+server)
+│   ├── playwright-runner.ts        # NEW: in-process Playwright execution engine
 │   └── utils.ts
 ├── next.config.mjs                 # security headers
 ├── vercel.json                     # function regions, maxDuration
@@ -343,6 +389,35 @@ If still OOM, bump Node's heap: `$env:NODE_OPTIONS = "--max-old-space-size=6144"
 ### `Module not found` after pulling changes
 
 `npm install` — dependencies changed.
+
+### Live Runner — `Playwright is not installed in this project`
+
+You ran `npm install` but skipped the browser-binary install. Fix:
+
+```bash
+npx playwright install chromium
+# (add `firefox webkit` if you want those browsers as well)
+```
+
+### Live Runner — `Live Runner cannot execute on serverless deployments`
+
+Expected on Vercel/Lambda. Live Runner needs a real display and the Chromium binary — neither exists in a serverless runtime. Use it from a local `npm run dev`.
+
+### Live Runner — script generation failed validation
+
+The model emitted disallowed syntax (e.g. an `import` line, a `test(...)` wrapper, or a banned API like `process.exit`). Regenerate with a more specific scenario description, or switch to `gemini-2.5-pro` for better instruction-following.
+
+### Live Runner — Chromium opens but the script throws immediately
+
+Two common causes:
+
+1. The selector doesn't exist on the page. Open DevTools on the target site, find a more stable locator (`getByRole`, `getByTestId`), and edit the script in the editor before re-running.
+2. The page hasn't fully loaded. Add a step like:
+   ```js
+   await step("Wait for hero", async () => {
+     await expect(page.getByRole("heading").first()).toBeVisible();
+   });
+   ```
 
 ---
 
